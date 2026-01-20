@@ -1,267 +1,262 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
-import { XMLParser } from "fast-xml-parser";
 
 export const runtime = "nodejs";
 
-type SourceRow = {
+type Source = {
   id: string;
   name: string;
-  type: "RSS";
+  type: "RSS" | "API";
   url: string;
   is_active: boolean;
 };
 
-type RssItem = {
-  title?: string;
-  link?: string;
-  pubDate?: string;
-  description?: string;
-  summary?: string;
-};
-
-function cleanHtmlToText(input: string) {
-  return (input || "")
-    .replace(/<script[\s\S]*?>[\s\S]*?<\/script>/gi, " ")
-    .replace(/<style[\s\S]*?>[\s\S]*?<\/style>/gi, " ")
-    .replace(/<[^>]*>/g, " ")
-    .replace(/\s+/g, " ")
-    .trim();
+function normalizeText(s: any) {
+  return (s ?? "").toString().trim();
 }
 
-function parseFrenchDateToIso(s: string): string | null {
-  // formats supportés: 20/01/2026, 20-01-2026, 20.01.2026
-  const m = s.match(/\b(\d{1,2})[\/\-.](\d{1,2})[\/\-.](\d{2,4})\b/);
-  if (!m) return null;
-  const dd = Number(m[1]);
-  const mm = Number(m[2]);
-  let yy = Number(m[3]);
-  if (yy < 100) yy += 2000;
-  const d = new Date(Date.UTC(yy, mm - 1, dd, 12, 0, 0)); // midi UTC pour éviter décalage
-  if (isNaN(d.getTime())) return null;
-  return d.toISOString();
-}
-
-function extractDeadline(text: string): string | null {
-  const t = text.toLowerCase();
-
-  // Cherche une “date limite / deadline / remise des offres” + date
-  const patterns = [
-    /(?:date limite|deadline|remise des offres|closing date|cl[ôo]ture).*?(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})/i,
-    /(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4}).*?(?:date limite|deadline|remise des offres|closing date|cl[ôo]ture)/i,
-  ];
-
-  for (const re of patterns) {
-    const m = t.match(re);
-    if (m?.[1]) {
-      const iso = parseFrenchDateToIso(m[1]);
-      if (iso) return iso;
-    }
-  }
-
-  // fallback: première date du texte (moins fiable)
-  const any = t.match(/\b(\d{1,2}[\/\-.]\d{1,2}[\/\-.]\d{2,4})\b/);
-  if (any?.[1]) {
-    const iso = parseFrenchDateToIso(any[1]);
-    if (iso) return iso;
-  }
-
-  return null;
-}
-
-function extractBuyer(title: string, text: string): string | null {
-  // heuristique simple: cherche “Ville de X”, “Mairie de X”, “CHU”, “Groupe”, “Société”
-  const corpus = `${title}\n${text}`.trim();
-
-  const candidates = [
-    /\b(Ville de [A-ZÀ-ÖØ-Ý][\wÀ-ÿ' -]{2,50})\b/,
-    /\b(Mairie de [A-ZÀ-ÖØ-Ý][\wÀ-ÿ' -]{2,50})\b/,
-    /\b(CHU [A-ZÀ-ÖØ-Ý][\wÀ-ÿ' -]{2,50})\b/,
-    /\b(Centre Hospitalier [A-ZÀ-ÖØ-Ý][\wÀ-ÿ' -]{2,50})\b/,
-    /\b(Groupe [A-ZÀ-ÖØ-Ý][\wÀ-ÿ' -]{2,50})\b/,
-  ];
-
-  for (const re of candidates) {
-    const m = corpus.match(re);
-    if (m?.[1]) return m[1].trim();
-  }
-
-  return null;
-}
-
-function extractLocation(text: string): string | null {
-  // heuristique ultra simple : repère “à Paris”, “sur Lyon”, “site de Lille”
-  const t = text.replace(/\s+/g, " ").trim();
-
-  const m =
-    t.match(/\b(?:à|au|aux|sur|site de)\s+([A-ZÀ-ÖØ-Ý][\wÀ-ÿ' -]{2,40})\b/) ||
-    t.match(/\b(?:Paris|Lyon|Marseille|Toulouse|Nice|Nantes|Strasbourg|Montpellier|Bordeaux|Lille|Rennes|Reims|Le Havre|Saint-Étienne|Toulon|Grenoble|Dijon|Angers|Nîmes)\b/);
-
-  if (!m) return null;
-  return (m[1] ?? m[0]).toString().trim();
-}
-
-function scoreOpportunity(text: string) {
-  const t = text.toLowerCase();
-
-  const rules: Array<[RegExp, number, string]> = [
-    [/t[ée]l[ée]surveillance|telesurveillance|remote monitoring|monitoring center/gi, 30, "TELESURVEILLANCE"],
-    [/vid[ée]osurveillance|video[-\s]?protection|cctv|camera surveillance/gi, 20, "VIDEO"],
-    [/audit\s+(de\s+)?s[ûu]ret[ée]|audit\s+securite|security audit|safety audit/gi, 30, "AUDIT_SECURITE"],
-    [/formation|training|e-?learning|distanciel|pr[ée]sentiel|lms|scorm/gi, 25, "FORMATION"],
-    [/appel d['’]offre|ao\b|tender|rfp|consultation|march[ée] public|procurement/gi, 35, "APPEL_OFFRE"],
-    [/\bcnaps\b|\biso\b|mase|apsad|ssi|surete/gi, 10, "EXIGENCES"],
-    [/incendie|evacuation|sst|secourisme|first aid/gi, 10, "HSE"],
-  ];
+function scoreFromText(title: string, body: string) {
+  const t = (title + " " + body).toLowerCase();
 
   let score = 0;
-  const tags = new Set<string>();
 
-  for (const [re, pts, tag] of rules) {
-    if (re.test(t)) {
-      score += pts;
-      tags.add(tag);
-    }
-  }
+  // Strong signals
+  if (/(appel d['’]?offre|consultation|tender|rfp|march[eé] public|march[eé]s publics)/i.test(t)) score += 25;
 
-  // Bonus deadline détectée
-  if (/(date limite|deadline|remise des offres|closing date|cl[ôo]ture)/i.test(t)) score += 10;
+  // Télésurveillance / sécurité
+  if (/(t[ée]l[ée]surveillance|telesurveillance|remote monitoring|supervision)/i.test(t)) score += 20;
+  if (/(vid[ée]oprotection|cctv|cam[ée]ra|videosurveillance)/i.test(t)) score += 18;
+  if (/(contr[oô]le d['’]?acc[eè]s|intrusion|alarme|ssi|incendie|sprinkler)/i.test(t)) score += 14;
 
-  // Malus hors scope (bruit)
-  if (/(bâtiment|construction|vrd|plomberie|menuiserie|peinture)/i.test(t)) score -= 20;
+  // Audit / conseil sûreté
+  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée])/i.test(t)) score += 15;
 
-  if (score < 0) score = 0;
+  // Formation
+  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|incendie|h0b0|habilitations)/i.test(t)) score += 15;
+
+  // Nice-to-have
+  if (/(cnaps|apsad|iso\s?27001|iso\s?9001|mase)/i.test(t)) score += 8;
+
+  // Clamp
   if (score > 100) score = 100;
+  if (score < 0) score = 0;
 
-  return { score, tags: Array.from(tags) };
+  return score;
 }
 
-async function fetchRss(url: string) {
-  const res = await fetch(url, { headers: { "User-Agent": "AO-Radar/1.0" } });
-  if (!res.ok) throw new Error(`RSS fetch failed ${res.status} ${res.statusText}`);
-  const xml = await res.text();
+function tagsFromText(title: string, body: string) {
+  const t = (title + " " + body).toLowerCase();
+  const tags: string[] = [];
 
-  const parser = new XMLParser({
-    ignoreAttributes: false,
-    attributeNamePrefix: "@_",
-    trimValues: true,
+  if (/(appel d['’]?offre|consultation|tender|rfp|march[eé] public|march[eé]s publics)/i.test(t)) tags.push("APPEL_OFFRE");
+  if (/(t[ée]l[ée]surveillance|telesurveillance|remote monitoring|supervision)/i.test(t)) tags.push("TELESURVEILLANCE");
+  if (/(vid[ée]oprotection|cctv|cam[ée]ra|videosurveillance)/i.test(t)) tags.push("VIDEO");
+  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée])/i.test(t)) tags.push("AUDIT_SECURITE");
+  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|incendie|h0b0)/i.test(t)) tags.push("FORMATION");
+  if (/(cnaps|apsad|iso|mase)/i.test(t)) tags.push("EXIGENCES");
+  if (/(hse|risques|prévention|qse)/i.test(t)) tags.push("HSE");
+
+  return Array.from(new Set(tags));
+}
+
+async function upsertOpportunity(params: {
+  title: string;
+  url: string;
+  published_at?: string | null;
+  summary?: string | null;
+  raw?: string | null;
+  score: number;
+  tags: string[];
+}) {
+  const supabase = supabaseServer();
+
+  // Dedup = URL unique
+  const { data: existing } = await supabase
+    .from("opportunities")
+    .select("id")
+    .eq("url", params.url)
+    .maybeSingle();
+
+  if (existing?.id) return { created: false };
+
+  const { error } = await supabase.from("opportunities").insert({
+    title: params.title,
+    url: params.url,
+    published_at: params.published_at ?? null,
+    summary: params.summary ?? null,
+    raw: params.raw ?? null,
+    score: params.score,
+    tags: params.tags,
+    status: "NEW",
   });
 
-  const data = parser.parse(xml);
+  if (error) throw error;
 
-  const items: RssItem[] =
-    data?.rss?.channel?.item
-      ? Array.isArray(data.rss.channel.item)
-        ? data.rss.channel.item
-        : [data.rss.channel.item]
-      : [];
+  return { created: true };
+}
 
-  return items
-    .map((it) => {
-      const title = cleanHtmlToText((it.title ?? "").toString());
-      const link = ((it.link ?? "").toString() || "").trim();
-      const pubDate = ((it.pubDate ?? "").toString() || "").trim();
-      const desc = cleanHtmlToText(((it.description ?? it.summary ?? "") as string) || "");
+// -------- RSS INGEST --------
+async function ingestRSS(source: Source) {
+  const res = await fetch(source.url, { cache: "no-store" });
+  if (!res.ok) throw new Error(`RSS fetch failed: ${source.name}`);
 
-      return { title, link, pubDate, description: desc };
-    })
-    .filter((x) => x.title && x.link);
+  const xml = await res.text();
+
+  // Very simple RSS parse (items)
+  const items = xml.match(/<item>([\s\S]*?)<\/item>/g) ?? [];
+  let created = 0;
+
+  for (const item of items.slice(0, 40)) {
+    const title = normalizeText(item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)?.[1] ?? item.match(/<title>([\s\S]*?)<\/title>/)?.[1]);
+    const link = normalizeText(item.match(/<link>([\s\S]*?)<\/link>/)?.[1]);
+    const pubDate = normalizeText(item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1]);
+
+    const description =
+      normalizeText(
+        item.match(/<description><!\[CDATA\[([\s\S]*?)\]\]><\/description>/)?.[1] ??
+          item.match(/<description>([\s\S]*?)<\/description>/)?.[1]
+      ) || "";
+
+    if (!title || !link) continue;
+
+    const score = scoreFromText(title, description);
+    const tags = tagsFromText(title, description);
+
+    // Filtrage léger : on garde un minimum de pertinence
+    if (score < 20) continue;
+
+    const r = await upsertOpportunity({
+      title,
+      url: link,
+      published_at: pubDate ? new Date(pubDate).toISOString() : null,
+      summary: description.slice(0, 600),
+      raw: description,
+      score,
+      tags,
+    });
+
+    if (r.created) created++;
+  }
+
+  return { created };
+}
+
+// -------- API INGEST (BOAMP/JOUE) --------
+async function ingestBOAMPExploreAPI(source: Source) {
+  // BOAMP explore v2 : supports where / limit / order_by
+  // We take latest records
+  const url = new URL(source.url);
+  url.searchParams.set("limit", "50");
+  url.searchParams.set("order_by", "dateparution desc");
+
+  const res = await fetch(url.toString(), { cache: "no-store" });
+  if (!res.ok) throw new Error(`API fetch failed: ${source.name}`);
+
+  const json = await res.json();
+  const results = (json?.results ?? []) as any[];
+
+  let created = 0;
+
+  for (const r of results) {
+    const title =
+      normalizeText(r?.intitule) ||
+      normalizeText(r?.objet) ||
+      normalizeText(r?.titre) ||
+      normalizeText(r?.libelle) ||
+      "Opportunité";
+
+    const link =
+      normalizeText(r?.url) ||
+      normalizeText(r?.lien) ||
+      normalizeText(r?.source) ||
+      "";
+
+    // If there is no direct link, we generate one
+    const fallbackLink = link || `${source.url}?ref=${encodeURIComponent(normalizeText(r?.id ?? r?.identifiant ?? title))}`;
+
+    const body = JSON.stringify(r);
+
+    const score = scoreFromText(title, body);
+    const tags = tagsFromText(title, body);
+
+    // Keep only relevant
+    if (score < 25) continue;
+
+    const pub =
+      normalizeText(r?.dateparution) ||
+      normalizeText(r?.datepublication) ||
+      normalizeText(r?.date) ||
+      null;
+
+    const summary =
+      normalizeText(r?.resume) ||
+      normalizeText(r?.description) ||
+      normalizeText(r?.objet) ||
+      "";
+
+    const out = await upsertOpportunity({
+      title,
+      url: fallbackLink,
+      published_at: pub ? new Date(pub).toISOString() : null,
+      summary: summary ? summary.slice(0, 600) : null,
+      raw: body,
+      score,
+      tags,
+    });
+
+    if (out.created) created++;
+  }
+
+  return { created };
 }
 
 export async function GET(req: Request) {
   const secret = new URL(req.url).searchParams.get("secret");
-  if (!process.env.CRON_SECRET || secret !== process.env.CRON_SECRET) {
-    return NextResponse.json({ error: "Unauthorized" }, { status: 401 });
+  if (!secret || secret !== process.env.CRON_SECRET) {
+    return NextResponse.json({ error: "unauthorized" }, { status: 401 });
   }
 
   const supabase = supabaseServer();
 
-  const run = await supabase.from("ingest_runs").insert({}).select("id").single();
-  const runId = run.data?.id ?? null;
+  const { data: sources, error } = await supabase
+    .from("sources")
+    .select("id,name,type,url,is_active")
+    .eq("is_active", true);
 
-  try {
-    const { data: sources, error: srcErr } = await supabase
-      .from("sources")
-      .select("id,name,type,url,is_active")
-      .eq("is_active", true)
-      .eq("type", "RSS");
+  if (error) return NextResponse.json({ error: error.message }, { status: 500 });
 
-    if (srcErr) throw srcErr;
+  let totalCreated = 0;
+  const details: any[] = [];
 
-    let inserted = 0;
-    let updated = 0;
-    let scannedItems = 0;
-
-    for (const src of (sources ?? []) as SourceRow[]) {
-      const items = await fetchRss(src.url);
-      scannedItems += items.length;
-
-      for (const it of items) {
-        const raw = `${it.title}\n${it.description}`;
-        const { score, tags } = scoreOpportunity(raw);
-
-        if (score < 20) continue;
-
-        let published_at: string | null = null;
-        if (it.pubDate) {
-          const d = new Date(it.pubDate);
-          if (!isNaN(d.getTime())) published_at = d.toISOString();
-        }
-
-        const deadline_at = extractDeadline(raw);
-        const buyer = extractBuyer(it.title, raw);
-        const location = extractLocation(raw);
-
-        const payload = {
-          source_id: src.id,
-          title: it.title,
-          url: it.link,
-          published_at,
-          deadline_at,
-          buyer,
-          location,
-          summary: it.description ? it.description.slice(0, 900) : null,
-          raw,
-          score,
-          tags,
-          // ne pas écraser le travail humain sur update
-        };
-
-        const up = await supabase
-          .from("opportunities")
-          .upsert(payload, { onConflict: "url" })
-          .select("id, created_at")
-          .single();
-
-        if (up.error) throw up.error;
-
-        const createdAt = new Date(up.data.created_at).getTime();
-        const now = Date.now();
-        if (now - createdAt < 12_000) inserted += 1;
-        else updated += 1;
+  for (const s of (sources ?? []) as Source[]) {
+    try {
+      if (s.type === "RSS") {
+        const r = await ingestRSS(s);
+        totalCreated += r.created;
+        details.push({ source: s.name, type: s.type, created: r.created });
+      } else if (s.type === "API") {
+        // BOAMP/JOUE Explore v2
+        const r = await ingestBOAMPExploreAPI(s);
+        totalCreated += r.created;
+        details.push({ source: s.name, type: s.type, created: r.created });
+      } else {
+        details.push({ source: s.name, type: s.type, created: 0, skipped: true });
       }
+    } catch (e: any) {
+      details.push({ source: s.name, type: s.type, error: e?.message ?? "error" });
     }
-
-    if (runId) {
-      await supabase
-        .from("ingest_runs")
-        .update({
-          finished_at: new Date().toISOString(),
-          inserted_count: inserted,
-          updated_count: updated,
-          scanned_count: scannedItems,
-        })
-        .eq("id", runId);
-    }
-
-    return NextResponse.json({ ok: true, scannedItems, inserted, updated });
-  } catch (e: any) {
-    if (runId) {
-      await supabase
-        .from("ingest_runs")
-        .update({ finished_at: new Date().toISOString(), error: e?.message ?? "error" })
-        .eq("id", runId);
-    }
-    return NextResponse.json({ ok: false, error: e?.message ?? "error" }, { status: 500 });
   }
+
+  // log run
+  await supabase.from("ingest_runs").insert({
+    status: "ok",
+    created: totalCreated,
+    meta: details,
+  });
+
+  return NextResponse.json({
+    ok: true,
+    created: totalCreated,
+    sources: details,
+  });
 }
