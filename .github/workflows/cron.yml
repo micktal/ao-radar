@@ -1,0 +1,14 @@
+name: AO Radar – Cron Ingestion
+
+on:
+  schedule:
+    - cron: "*/15 * * * *"
+  workflow_dispatch:
+
+jobs:
+  ingest:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call AO Radar ingestion endpoint
+        run: |
+          curl -s -X GET "https://ao-radar.vercel.app/api/cron/ingest?secret=x95hu2tkQWGp8MqukW93oojhkhDdUiwtscuHAkMWwAg="
