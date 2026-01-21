@@ -1,333 +1,236 @@
-"use client";
+import Link from "next/link";
+import { notFound } from "next/navigation";
+import { supabaseServer } from "@/lib/supabaseServer";
 
-import { useEffect, useMemo, useState } from "react";
-import { useParams } from "next/navigation";
+export const runtime = "nodejs";
 
-type Opp = {
-  id: string;
-  title: string;
-  url: string;
-  published_at: string | null;
-  score: number;
-  tags: string[];
-  status: "NEW" | "TRIAGED" | "QUALIFIED" | "SENT" | "WON" | "LOST";
-  summary: string | null;
-  raw: string | null;
-  created_at: string;
-
-  assigned_to: string | null;
-  priority: "LOW" | "NORMAL" | "HIGH" | null;
-  note: string | null;
-};
-
-const STATUS_LABELS: Record<Opp["status"], string> = {
-  NEW: "Nouveau",
-  TRIAGED: "Trié",
-  QUALIFIED: "Qualifié",
-  SENT: "Transmis",
-  WON: "Gagné",
-  LOST: "Perdu",
-};
-
-const PRIORITY_LABELS: Record<NonNullable<Opp["priority"]>, string> = {
-  LOW: "Faible",
-  NORMAL: "Normale",
-  HIGH: "Haute",
-};
-
-const TAG_LABELS: Record<string, string> = {
-  TELESURVEILLANCE: "Télésurveillance",
-  VIDEO: "Vidéoprotection",
-  AUDIT_SECURITE: "Audit sécurité",
-  FORMATION: "Formation",
-  APPEL_OFFRE: "Appel d’offres",
-  EXIGENCES: "Exigences",
-  HSE: "HSE",
-};
-
-const inputClass =
-  "mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black";
-const selectClass =
-  "mt-1 w-full rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black focus:outline-none focus:ring-2 focus:ring-black";
-const textareaClass =
-  "mt-1 w-full min-h-[120px] rounded-md border border-gray-300 bg-white px-3 py-2 text-sm text-black placeholder:text-gray-400 focus:outline-none focus:ring-2 focus:ring-black";
-
-function extractKeyPoints(text: string) {
-  const t = (text || "").toLowerCase();
-  const picks: string[] = [];
-
-  if (/(télésurveillance|telesurveillance|remote monitoring)/i.test(t)) picks.push("Sujet : Télésurveillance / supervision");
-  if (/(audit\s+sécurité|audit\s+sûreté|security audit)/i.test(t)) picks.push("Sujet : Audit sécurité / sûreté");
-  if (/(formation|e-learning|distanciel|présentiel|sst|incendie)/i.test(t)) picks.push("Sujet : Formation / e-learning");
-  if (/(appel d['’]offre|consultation|tender|rfp|marché public)/i.test(t)) picks.push("Type : Appel d’offres / consultation");
-  if (/(cnaps|apsad|iso|mase|ssi)/i.test(t)) picks.push("Exigences : conformité / certifications mentionnées");
-  if (/(date limite|deadline|remise des offres|closing date)/i.test(t)) picks.push("Important : une date limite est mentionnée (à vérifier)");
-
-  return picks.slice(0, 6);
+function safeJsonParse(input: any) {
+  if (!input) return null;
+  if (typeof input === "object") return input;
+  try {
+    return JSON.parse(input);
+  } catch {
+    return null;
+  }
 }
 
-function buildEmailText(o: Opp) {
-  const tags = (o.tags ?? []).map((t) => TAG_LABELS[t] ?? t).join(", ");
-  const published = o.published_at ? new Date(o.published_at).toLocaleString() : "-";
-
-  return `Bonjour,
-
-Je te transfère une opportunité détectée via AO Radar.
-
-TITRE :
-${o.title}
-
-SCORE :
-${o.score}/100
-
-CATEGORIE / TAGS :
-${tags || "-"}
-
-STATUT :
-${STATUS_LABELS[o.status]}
-
-DATE (publication) :
-${published}
-
-LIEN SOURCE :
-${o.url}
-
-RESUME :
-${o.summary ?? "-"}
-
-NOTE ALTERNANT :
-${o.note ?? "-"}
-
-Assigné à : ${o.assigned_to ?? "-"}
-Priorité : ${o.priority ? PRIORITY_LABELS[o.priority] : "-"}
-
-Merci,
-`;
+function formatDate(v: any) {
+  if (!v) return "—";
+  const d = new Date(v);
+  if (Number.isNaN(d.getTime())) return String(v);
+  return d.toLocaleString("fr-FR");
 }
 
-export default function OpportunityDetailPage() {
-  const params = useParams<{ id: string }>();
-  const id = params?.id as string;
-
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-
-  const [opp, setOpp] = useState<Opp | null>(null);
-
-  // form fields
-  const [assignedTo, setAssignedTo] = useState<string>("");
-  const [priority, setPriority] = useState<Opp["priority"]>("NORMAL");
-  const [note, setNote] = useState<string>("");
-
-  const points = useMemo(() => {
-    if (!opp) return [];
-    return extractKeyPoints(`${opp.title}\n${opp.summary ?? ""}\n${opp.raw ?? ""}`);
-  }, [opp]);
-
-  async function load() {
-    setLoading(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`/api/opportunities/get?id=${encodeURIComponent(id)}`);
-      if (!res.ok) throw new Error("Impossible de charger l’opportunité");
-
-      const json = await res.json();
-      setOpp(json.data as Opp);
-
-      setAssignedTo((json.data?.assigned_to ?? "") as string);
-      setPriority(((json.data?.priority ?? "NORMAL") as Opp["priority"]) ?? "NORMAL");
-      setNote((json.data?.note ?? "") as string);
-    } catch (e: any) {
-      setError(e?.message ?? "Erreur");
-    } finally {
-      setLoading(false);
-    }
-  }
-
-  async function save() {
-    if (!opp) return;
-
-    const res = await fetch("/api/opportunities/update-details", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        id: opp.id,
-        assigned_to: assignedTo.trim() ? assignedTo.trim() : null,
-        priority: priority ?? "NORMAL",
-        note: note.trim() ? note.trim() : null,
-      }),
-    });
-
-    if (!res.ok) {
-      alert("Erreur : impossible d’enregistrer.");
-      return;
-    }
-
-    alert("Enregistré ✅");
-    await load();
-  }
-
-  async function copyEmail() {
-    if (!opp) return;
-    const text = buildEmailText({ ...opp, assigned_to: assignedTo || null, priority, note: note || null });
-    await navigator.clipboard.writeText(text);
-    alert("Mail copié ✅ (colle-le dans Outlook/Gmail)");
-  }
-
-  useEffect(() => {
-    if (id) load();
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [id]);
+function Row({ label, value }: { label: string; value: any }) {
+  const v =
+    value === null || value === undefined || value === ""
+      ? "—"
+      : Array.isArray(value)
+      ? value.join(", ")
+      : String(value);
 
   return (
-    <main className="min-h-screen p-8">
-      <div className="flex items-end justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-semibold">Fiche Opportunité</h1>
-          <p className="mt-2 text-sm opacity-80">Qualification + transmission commerciale.</p>
-        </div>
-
-        <div className="flex gap-2">
-          <a className="rounded-md border px-4 py-2 hover:bg-black hover:text-white" href="/dashboard">
-            Retour dashboard
-          </a>
-          {opp?.url ? (
-            <a
-              className="rounded-md border px-4 py-2 hover:bg-black hover:text-white"
-              href={opp.url}
-              target="_blank"
-              rel="noreferrer"
-            >
-              Ouvrir la source
-            </a>
-          ) : null}
-        </div>
-      </div>
-
-      {loading ? (
-        <div className="mt-8 rounded-xl border bg-white p-5 text-sm text-gray-600">Chargement…</div>
-      ) : null}
-
-      {error ? (
-        <div className="mt-8 rounded-xl border bg-white p-5 text-sm">
-          <div className="font-semibold text-black">Erreur</div>
-          <div className="mt-2 text-gray-600">{error}</div>
-        </div>
-      ) : null}
-
-      {!loading && opp ? (
-        <div className="mt-6 grid grid-cols-1 gap-6 lg:grid-cols-3">
-          {/* MAIN */}
-          <div className="lg:col-span-2 rounded-xl border bg-white p-5 text-black">
-            <div className="text-xs text-gray-600">Titre</div>
-            <div className="mt-1 text-xl font-semibold">{opp.title}</div>
-
-            <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
-              <Info label="Score" value={`${opp.score}`} />
-              <Info label="Statut" value={STATUS_LABELS[opp.status]} />
-              <Info label="Publié" value={opp.published_at ? new Date(opp.published_at).toLocaleString() : "-"} />
-              <Info label="Créé" value={new Date(opp.created_at).toLocaleString()} />
-            </div>
-
-            <div className="mt-4">
-              <div className="text-xs text-gray-600">Résumé</div>
-              <div className="mt-2 text-sm leading-relaxed text-gray-700">{opp.summary ?? "—"}</div>
-            </div>
-
-            <div className="mt-6">
-              <div className="text-xs text-gray-600">Tags</div>
-              <div className="mt-2 flex flex-wrap gap-2">
-                {(opp.tags ?? []).map((t: string) => (
-                  <span key={t} className="rounded-full border px-2 py-1 text-xs">
-                    {TAG_LABELS[t] ?? t}
-                  </span>
-                ))}
-                {(!opp.tags || opp.tags.length === 0) && <span className="text-xs text-gray-600">—</span>}
-              </div>
-            </div>
-
-            <div className="mt-6">
-              <div className="text-xs text-gray-600">Texte brut (référence)</div>
-              <pre className="mt-2 max-h-[320px] overflow-auto rounded-lg border bg-gray-50 p-3 text-xs leading-relaxed text-gray-800">
-{opp.raw ?? "—"}
-              </pre>
-            </div>
-          </div>
-
-          {/* SIDE */}
-          <div className="rounded-xl border bg-white p-5 text-black">
-            <div className="text-sm font-semibold">Qualification alternant</div>
-
-            <div className="mt-4">
-              <label className="text-xs text-gray-600">Assigné à</label>
-              <input
-                className={inputClass}
-                value={assignedTo}
-                onChange={(e) => setAssignedTo(e.target.value)}
-                placeholder="Nom alternant / équipe…"
-              />
-            </div>
-
-            <div className="mt-4">
-              <label className="text-xs text-gray-600">Priorité</label>
-              <select className={selectClass} value={priority ?? "NORMAL"} onChange={(e) => setPriority(e.target.value as any)}>
-                <option value="LOW">Faible</option>
-                <option value="NORMAL">Normale</option>
-                <option value="HIGH">Haute</option>
-              </select>
-            </div>
-
-            <div className="mt-4">
-              <label className="text-xs text-gray-600">Note / commentaire</label>
-              <textarea
-                className={textareaClass}
-                value={note}
-                onChange={(e) => setNote(e.target.value)}
-                placeholder="Ce qui est important, points à vérifier, contact, deadline…"
-              />
-            </div>
-
-            <div className="mt-4 flex flex-wrap gap-2">
-              <button onClick={save} className="rounded-md border px-4 py-2 text-sm hover:bg-black hover:text-white">
-                Enregistrer
-              </button>
-
-              <button onClick={copyEmail} className="rounded-md border px-4 py-2 text-sm hover:bg-black hover:text-white">
-                Transmettre (copier mail)
-              </button>
-            </div>
-
-            <div className="mt-6">
-              <div className="text-sm font-semibold">Points clés détectés</div>
-              <ul className="mt-3 space-y-2 text-sm">
-                {points.length > 0 ? (
-                  points.map((p, i) => (
-                    <li key={i} className="rounded-md border px-3 py-2 text-gray-800">
-                      {p}
-                    </li>
-                  ))
-                ) : (
-                  <li className="text-sm text-gray-600">Aucun point clé détecté.</li>
-                )}
-              </ul>
-            </div>
-
-            <div className="mt-6 text-xs text-gray-600">
-              ✅ Objectif : un alternant prépare une transmission claire en moins de 2 minutes.
-            </div>
-          </div>
-        </div>
-      ) : null}
-    </main>
+    <div className="grid grid-cols-3 gap-3 py-2 border-b border-slate-200">
+      <div className="text-sm font-medium text-slate-600">{label}</div>
+      <div className="col-span-2 text-sm text-slate-900 break-words">{v}</div>
+    </div>
   );
 }
 
-function Info(props: { label: string; value: string }) {
+function Section({ title, children }: { title: string; children: React.ReactNode }) {
   return (
-    <div className="rounded-lg border bg-white p-3">
-      <div className="text-xs text-gray-600">{props.label}</div>
-      <div className="mt-1 font-medium text-black">{props.value}</div>
+    <div className="bg-white rounded-xl border border-slate-200 shadow-sm p-5">
+      <div className="text-base font-semibold text-slate-900 mb-3">{title}</div>
+      <div>{children}</div>
+    </div>
+  );
+}
+
+export default async function OpportunityPage(props: { params: Promise<{ id: string }> }) {
+  const { id } = await props.params;
+
+  const supabase = supabaseServer();
+
+  const { data, error } = await supabase
+    .from("opportunities")
+    .select("id,title,url,summary,raw,score,status,tags,created_at,published_at")
+    .eq("id", id)
+    .maybeSingle();
+
+  if (error || !data) return notFound();
+
+  const rawObj = safeJsonParse(data.raw);
+  const raw = rawObj || {};
+
+  // Champs BOAMP / JOUE standards
+  const idweb = raw?.idweb ?? raw?.id ?? raw?.IDWEB ?? null;
+  const contractfolderid = raw?.contractfolderid ?? raw?.contractFolderId ?? null;
+
+  const objet = raw?.objet ?? raw?.intitule ?? data.title ?? null;
+  const famille = raw?.famille ?? null;
+  const famille_libelle = raw?.famille_libelle ?? null;
+
+  const dateparution = raw?.dateparution ?? data.published_at ?? null;
+  const datefindiffusion = raw?.datefindiffusion ?? null;
+  const datelimitereponse = raw?.datelimitereponse ?? null;
+
+  const nomacheteur = raw?.nomacheteur ?? raw?.acheteur ?? null;
+  const titulaire = raw?.titulaire ?? null;
+
+  const perimetre = raw?.perimetre ?? null;
+  const type_procedure = raw?.type_procedure ?? null;
+  const procedure_libelle = raw?.procedure_libelle ?? null;
+
+  const nature = raw?.nature ?? null;
+  const nature_libelle = raw?.nature_libelle ?? null;
+
+  const criteres = raw?.criteres ?? null;
+
+  const dep = raw?.code_departement ?? null;
+  const descripteur_code = raw?.descripteur_code ?? null;
+  const descripteur_libelle = raw?.descripteur_libelle ?? null;
+
+  const urlAvis = raw?.url_avis ?? data.url ?? null;
+
+  // JSON techniques encodés
+  const gestionObj = safeJsonParse(raw?.gestion);
+  const donneesObj = safeJsonParse(raw?.donnees);
+
+  // Extraction eForms (buyer / montants)
+  const noticeResult =
+    donneesObj?.EFORMS?.ContractAwardNotice?.["ext:UBLExtensions"]?.["ext:UBLExtension"]?.["ext:ExtensionContent"]?.[
+      "efext:EformsExtension"
+    ]?.["efac:NoticeResult"];
+
+  const maxFramework =
+    noticeResult?.["efbc:OverallMaximumFrameworkContractsAmount"]?.["#text"] ??
+    noticeResult?.["efbc:OverallMaximumFrameworkContractsAmount"] ??
+    null;
+
+  const lotResult = noticeResult?.["efac:LotResult"] ?? null;
+  const higherTender = lotResult?.["cbc:HigherTenderAmount"]?.["#text"] ?? null;
+  const lowerTender = lotResult?.["cbc:LowerTenderAmount"]?.["#text"] ?? null;
+
+  const submissions =
+    lotResult?.["efac:ReceivedSubmissionsStatistics"]?.["efbc:StatisticsNumeric"] ??
+    lotResult?.["efac:ReceivedSubmissionsStatistics"] ??
+    null;
+
+  const orgs =
+    donneesObj?.EFORMS?.ContractAwardNotice?.["ext:UBLExtensions"]?.["ext:UBLExtension"]?.["ext:ExtensionContent"]?.[
+      "efext:EformsExtension"
+    ]?.["efac:Organizations"]?.["efac:Organization"];
+
+  const orgArray = Array.isArray(orgs) ? orgs : orgs ? [orgs] : [];
+  const buyer = orgArray?.[0]?.["efac:Company"] ?? null;
+
+  const buyerEmail = buyer?.["cac:Contact"]?.["cbc:ElectronicMail"] ?? null;
+  const buyerTel = buyer?.["cac:Contact"]?.["cbc:Telephone"] ?? null;
+  const buyerCity = buyer?.["cac:PostalAddress"]?.["cbc:CityName"] ?? null;
+
+  return (
+    <div className="min-h-screen bg-slate-50 text-slate-900">
+      <div className="max-w-6xl mx-auto px-6 py-8 space-y-6">
+        {/* Header */}
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <div className="text-2xl font-bold">{data.title}</div>
+            <div className="text-sm text-slate-600 mt-1">
+              Score: <span className="font-semibold">{data.score}</span> • Statut:{" "}
+              <span className="font-semibold">{data.status}</span> • Créé le {formatDate(data.created_at)}
+            </div>
+          </div>
+
+          <div className="flex gap-2">
+            <Link
+              href="/dashboard"
+              className="px-3 py-2 rounded-lg border border-slate-300 bg-white text-slate-800 hover:bg-slate-100"
+            >
+              Retour
+            </Link>
+            {urlAvis ? (
+              <a
+                href={urlAvis}
+                target="_blank"
+                className="px-3 py-2 rounded-lg bg-black text-white hover:opacity-90"
+              >
+                Ouvrir l’avis
+              </a>
+            ) : null}
+          </div>
+        </div>
+
+        {/* Résumé */}
+        {data.summary ? (
+          <Section title="Résumé">
+            <div className="text-sm text-slate-800 leading-relaxed whitespace-pre-wrap">{data.summary}</div>
+          </Section>
+        ) : null}
+
+        {/* Fiche structurée */}
+        <div className="grid md:grid-cols-2 gap-6">
+          <Section title="Identifiants">
+            <Row label="ID Web" value={idweb} />
+            <Row label="ID interne" value={data.id} />
+            <Row label="Contract Folder ID" value={contractfolderid} />
+            <Row label="Famille" value={famille} />
+            <Row label="Libellé famille" value={famille_libelle} />
+          </Section>
+
+          <Section title="Objet / Sujet">
+            <Row label="Objet" value={objet} />
+            <Row label="Descripteur (codes)" value={descripteur_code} />
+            <Row label="Descripteur (libellés)" value={descripteur_libelle} />
+            <Row label="Tags" value={data.tags} />
+          </Section>
+
+          <Section title="Publication & Diffusion">
+            <Row label="Date de parution" value={formatDate(dateparution)} />
+            <Row label="Fin diffusion" value={formatDate(datefindiffusion)} />
+            <Row label="Date limite réponse" value={formatDate(datelimitereponse)} />
+          </Section>
+
+          <Section title="Acheteur / Attributaire">
+            <Row label="Acheteur" value={nomacheteur} />
+            <Row label="Titulaire" value={titulaire} />
+            <Row label="Département" value={dep} />
+            <Row label="Périmètre" value={perimetre} />
+          </Section>
+
+          <Section title="Procédure">
+            <Row label="Type procédure" value={type_procedure} />
+            <Row label="Libellé procédure" value={procedure_libelle} />
+            <Row label="Nature" value={nature} />
+            <Row label="Nature (libellé)" value={nature_libelle} />
+            <Row label="Critères" value={criteres} />
+          </Section>
+
+          <Section title="Données eForms (extraits)">
+            <Row label="Ville acheteur" value={buyerCity} />
+            <Row label="Email acheteur" value={buyerEmail} />
+            <Row label="Téléphone acheteur" value={buyerTel} />
+            <Row label="Montant max cadre (€)" value={maxFramework} />
+            <Row label="Offre max (€)" value={higherTender} />
+            <Row label="Offre min (€)" value={lowerTender} />
+            <Row label="Soumissions reçues" value={submissions} />
+          </Section>
+        </div>
+
+        {/* JSON technique */}
+        <div className="grid md:grid-cols-2 gap-6">
+          <Section title="Gestion (JSON)">
+            <pre className="text-xs bg-slate-100 border border-slate-200 rounded-lg p-3 overflow-auto max-h-[420px]">
+              {gestionObj ? JSON.stringify(gestionObj, null, 2) : "—"}
+            </pre>
+          </Section>
+
+          <Section title="Données (JSON)">
+            <pre className="text-xs bg-slate-100 border border-slate-200 rounded-lg p-3 overflow-auto max-h-[420px]">
+              {donneesObj ? JSON.stringify(donneesObj, null, 2) : "—"}
+            </pre>
+          </Section>
+        </div>
+      </div>
     </div>
   );
 }

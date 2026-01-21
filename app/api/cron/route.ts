@@ -11,64 +11,222 @@ type Source = {
   is_active: boolean;
 };
 
+// --------------------- CPV + Keywords (BOAMP) ---------------------
 const CPV_CODES = [
-  "79711000", // Services de surveillance par systèmes d'alarme
-  "79710000", // Services de sécurité
-  "45312000", // Travaux d'installation de systèmes d'alarme
-  "50610000", // Réparation/entretien matériel de sécurité
-  "35120000", // Fourniture systèmes de surveillance
-  "71317100", // Conseil protection/contrôle incendies
-  "79417000", // Conseil en sécurité
-  "71317000", // Conseil protection/contrôle risques
-  "80550000", // Formation sécurité
-  "80561000", // Formation santé (SST)
+  "79711000", // alarm monitoring
+  "79710000", // security services
+  "45312000", // alarm installation works
+  "50610000", // repair/maintenance security equipment
+  "35120000", // surveillance systems supply
+  "71317100", // fire protection & control consultancy
+  "79417000", // security consultancy
+  "71317000", // risk protection & control consultancy
+  "80550000", // security training
+  "80561000", // health training / SST
 ];
 
-// ✅ Keywords "forts" (métier) : beaucoup moins de bruit
-const KEYWORDS_STRONG = [
+const KEYWORDS = [
   "télésurveillance",
   "telesurveillance",
+  "remote monitoring",
+  "supervision",
+  "alarme",
+  "intrusion",
   "vidéoprotection",
   "videosurveillance",
   "cctv",
-  "alarme",
-  "intrusion",
+  "caméra",
   "contrôle d'accès",
   "controle d acces",
   "audit sécurité",
   "audit sûreté",
+  "audit surete",
+  "sûreté",
+  "surete",
   "sécurité privée",
   "security audit",
   "formation sécurité",
-  "e-learning sécurité",
+  "e-learning",
+  "elearning",
   "sst",
   "secourisme",
   "incendie",
-  "ssi",
 ];
 
-// ✅ Mots "faibles" -> on évite (trop large)
-// ex: "surveillance" tout court = sort des trucs type déménagement
-// const KEYWORDS_WEAK = ["surveillance"];
+// --------------------- ANTI-BRUIT (hors scope) ---------------------
+// Dès qu'on tombe sur ces domaines : eau potable, voirie, déchets, etc.
+// on évite la qualification "Audit/Formation/Télésurveillance".
+const NOISE_PATTERNS: RegExp[] = [
+  /\beau potable\b/i,
+  /\bassainissement\b/i,
+  /\bréseau(x)? d['’]?eau\b/i,
+  /\bstation d['’]?épuration\b/i,
+  /\bdéchets\b/i,
+  /\bcollecte\b.*\bordures\b/i,
+  /\bvoirie\b/i,
+  /\bchaussée\b/i,
+  /\benrob[ée]s?\b/i,
+  /\béclairage public\b/i,
+  /\broute\b/i,
+  /\bgoudron\b/i,
+  /\bforage\b/i,
+  /\bcanalisations?\b/i,
+  /\bplomberie\b/i,
+  /\bchauffage\b/i,
+  /\bventilation\b/i,
+  /\bclimatisation\b/i,
+  /\brestauration\b/i,
+  /\bcantine\b/i,
+  /\bnettoyage\b/i,
+  /\bpropret[ée]\b/i,
+  /\bd[ée]m[ée]nagement\b/i,
+  /\btransport\b/i,
+  /\bcollectiv(e|it[ée])\b/i,
+  /\bespace vert\b/i,
+  /\bjardinage\b/i,
+  /\btravaux de peinture\b/i,
+  /\bma[çc]onnerie\b/i,
+  /\bcharpente\b/i,
+  /\bcouverture\b/i,
+];
+
+// --------------------- Detection stricte métier ---------------------
+// On attribue une FAMILLE uniquement si on a un "signal sécurité" fort.
+
+const TELE_PATTERNS: RegExp[] = [
+  /\bt[ée]l[ée]surveillance\b/i,
+  /\btelesurveillance\b/i,
+  /\bremote monitoring\b/i,
+  /\bsupervision\b/i,
+  /\bcentre de t[ée]l[ée]surveillance\b/i,
+  /\bpc s[ée]curit[ée]\b/i,
+  /\bpcs\b/i,
+  /\balarme\b/i,
+  /\bintrusion\b/i,
+  /\btransmission\b/i,
+  /\bvideo(surveillance)?\b/i,
+  /\bcctv\b/i,
+  /\bvid[ée]oprotection\b/i,
+];
+
+const AUDIT_SEC_PATTERNS: RegExp[] = [
+  /\baudit\b.*\bs[ée]curit[ée]\b/i,
+  /\baudit\b.*\bs[ûu]ret[ée]\b/i,
+  /\baudit\b.*\bsurete\b/i,
+  /\bdiagnostic\b.*\bs[ée]curit[ée]\b/i,
+  /\bconformit[ée]\b.*\bssi\b/i,
+  /\bapsad\b/i,
+  /\bcnaps\b/i,
+  /\biso\s?27001\b/i,
+  /\biso\s?9001\b/i,
+  /\bcontr[oô]le d['’]?acc[eè]s\b/i,
+  /\bintrusion\b/i,
+  /\balarme\b/i,
+  /\bvid[ée]oprotection\b/i,
+  /\bcctv\b/i,
+  /\bsyst[èe]me(s)? de s[ée]curit[ée]\b/i,
+  /\bs[ée]curit[ée]\s+incendie\b/i,
+  /\bssi\b/i,
+];
+
+const FORMATION_PATTERNS: RegExp[] = [
+  /\bformation\b/i,
+  /\bformateur\b/i,
+  /\bcentre de formation\b/i,
+  /\bstage\b/i,
+  /\be[-\s]?learning\b/i,
+  /\belearning\b/i,
+  /\bdistanciel\b/i,
+  /\bpr[ée]sentiel\b/i,
+  /\bmodalit[ée]s? p[ée]dagogiques?\b/i,
+  /\bquiz\b/i,
+  /\bcertification\b/i,
+  /\bhabilitations?\b/i,
+  /\bsst\b/i,
+  /\bsecourisme\b/i,
+  /\bincendie\b/i,
+  /\bh0b0\b/i,
+  /\baps\b/i,
+];
+
+// Pour la formation, on évite les formations hors scope type "RH", "SAP", etc
+// mais ici on reste "sécurité" (SST, incendie, etc) déjà couvert.
+const FORMATION_SECURITY_GUARD: RegExp[] = [
+  /\bs[ée]curit[ée]\b/i,
+  /\bsurete\b/i,
+  /\bs[ûu]ret[ée]\b/i,
+  /\bincendie\b/i,
+  /\bsst\b/i,
+  /\bsecourisme\b/i,
+  /\bcontr[oô]le d['’]?acc[eè]s\b/i,
+  /\bvid[ée]oprotection\b/i,
+  /\bcctv\b/i,
+];
 
 function normalizeText(v: any) {
   return (v ?? "").toString().trim();
+}
+
+function compactText(v: any) {
+  return normalizeText(v).toLowerCase();
+}
+
+function isNoise(text: string) {
+  return NOISE_PATTERNS.some((r) => r.test(text));
+}
+
+function matchesAny(text: string, patterns: RegExp[]) {
+  return patterns.some((r) => r.test(text));
+}
+
+// Détermine la famille métier (strict)
+function detectFamilies(title: string, body: string) {
+  const t = (title + " " + body).toLowerCase();
+
+  // Anti-bruit global
+  if (isNoise(t)) {
+    return {
+      famTele: false,
+      famAudit: false,
+      famFormation: false,
+      blockedByNoise: true,
+    };
+  }
+
+  const famTele = matchesAny(t, TELE_PATTERNS);
+
+  const famAudit = matchesAny(t, AUDIT_SEC_PATTERNS);
+
+  // Formation : il faut le mot formation + un signal sécurité (guard)
+  const hasFormation = matchesAny(t, FORMATION_PATTERNS);
+  const formationGuard = matchesAny(t, FORMATION_SECURITY_GUARD);
+  const famFormation = hasFormation && formationGuard;
+
+  return {
+    famTele,
+    famAudit,
+    famFormation,
+    blockedByNoise: false,
+  };
 }
 
 function scoreFromText(title: string, body: string) {
   const t = (title + " " + body).toLowerCase();
   let score = 0;
 
+  // Appel d'offre / consultation
   if (/(appel d['’]?offre|consultation|tender|rfp|march[eé] public|march[eé]s publics)/i.test(t)) score += 25;
 
-  if (/(t[ée]l[ée]surveillance|telesurveillance|remote monitoring|supervision)/i.test(t)) score += 20;
-  if (/(vid[ée]oprotection|cctv|cam[ée]ra|videosurveillance)/i.test(t)) score += 18;
-  if (/(contr[oô]le d['’]?acc[eè]s|intrusion|alarme|ssi|incendie|sprinkler)/i.test(t)) score += 14;
+  // Familles strictes
+  const fam = detectFamilies(title, body);
 
-  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée]|conseil)/i.test(t)) score += 15;
+  if (fam.blockedByNoise) return 0;
 
-  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|secourisme|h0b0|habilitations)/i.test(t)) score += 15;
+  if (fam.famTele) score += 25;
+  if (fam.famAudit) score += 20;
+  if (fam.famFormation) score += 20;
 
+  // Exigences / normes
   if (/(cnaps|apsad|iso\s?27001|iso\s?9001|mase)/i.test(t)) score += 8;
 
   if (score > 100) score = 100;
@@ -81,20 +239,25 @@ function tagsFromText(title: string, body: string) {
   const t = (title + " " + body).toLowerCase();
   const tags: string[] = [];
 
+  const fam = detectFamilies(title, body);
+
+  if (fam.blockedByNoise) {
+    tags.push("BRUIT");
+    return Array.from(new Set(tags));
+  }
+
   if (/(appel d['’]?offre|consultation|tender|rfp|march[eé] public|march[eé]s publics)/i.test(t)) tags.push("APPEL_OFFRE");
-  if (/(t[ée]l[ée]surveillance|telesurveillance|remote monitoring|supervision)/i.test(t)) tags.push("TELESURVEILLANCE");
-  if (/(vid[ée]oprotection|cctv|cam[ée]ra|videosurveillance)/i.test(t)) tags.push("VIDEO");
-  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée]|conseil)/i.test(t)) tags.push("AUDIT_SECURITE");
-  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|secourisme|h0b0)/i.test(t)) tags.push("FORMATION");
+
+  // Familles métier propres
+  if (fam.famTele) tags.push("FAM_TELE", "TELESURVEILLANCE");
+  if (fam.famAudit) tags.push("FAM_AUDIT", "AUDIT_SECURITE");
+  if (fam.famFormation) tags.push("FAM_FORMATION", "FORMATION");
+
+  // Exigences
   if (/(cnaps|apsad|iso|mase)/i.test(t)) tags.push("EXIGENCES");
   if (/(hse|risques|prévention|qse)/i.test(t)) tags.push("HSE");
 
   return Array.from(new Set(tags));
-}
-
-function containsStrongKeyword(text: string) {
-  const t = text.toLowerCase();
-  return KEYWORDS_STRONG.some((k) => t.includes(k.toLowerCase()));
 }
 
 async function upsertOpportunity(params: {
@@ -108,12 +271,8 @@ async function upsertOpportunity(params: {
 }) {
   const supabase = supabaseServer();
 
-  const { data: existing } = await supabase
-    .from("opportunities")
-    .select("id")
-    .eq("url", params.url)
-    .maybeSingle();
-
+  // DEDUP URL
+  const { data: existing } = await supabase.from("opportunities").select("id").eq("url", params.url).maybeSingle();
   if (existing?.id) return { created: false };
 
   const { error } = await supabase.from("opportunities").insert({
@@ -140,13 +299,12 @@ async function ingestRSS(source: Source) {
   const items = xml.match(/<item>([\s\S]*?)<\/item>/g) ?? [];
   let created = 0;
 
-  for (const item of items.slice(0, 40)) {
+  for (const item of items.slice(0, 60)) {
     const title =
       normalizeText(
         item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)?.[1] ??
           item.match(/<title>([\s\S]*?)<\/title>/)?.[1]
       ) || "";
-
     const link = normalizeText(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] ?? "");
     const pubDate = normalizeText(item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] ?? "");
 
@@ -158,13 +316,11 @@ async function ingestRSS(source: Source) {
 
     if (!title || !link) continue;
 
-    // ✅ RSS : garder seulement si keyword fort
-    if (!containsStrongKeyword(title + " " + description)) continue;
-
     const score = scoreFromText(title, description);
-    const tags = tagsFromText(title, description);
+    if (score < 30) continue;
 
-    if (score < 20) continue;
+    const tags = tagsFromText(title, description);
+    if (tags.includes("BRUIT")) continue;
 
     const r = await upsertOpportunity({
       title,
@@ -184,11 +340,9 @@ async function ingestRSS(source: Source) {
 
 // ---------------- BOAMP DILA API (CPV OR KEYWORDS) ----------------
 function buildBOAMPWhere() {
-  // ✅ cpv = array objects { PRINCIPAL: "XXXX" } donc on filtre sur cpv.PRINCIPAL
-  const cpvOr = CPV_CODES.map((c) => `cpv.PRINCIPAL LIKE '${c}%'`).join(" OR ");
+  const cpvOr = CPV_CODES.map((c) => `cpv LIKE '${c}%'`).join(" OR ");
 
-  // ✅ keywords (forts) en OR pour marchés mal codifiés
-  const kwOr = KEYWORDS_STRONG.map((k) => {
+  const kwOr = KEYWORDS.map((k) => {
     const kk = k.replace(/'/g, "''").toLowerCase();
     return `(lower(objet) like '%${kk}%' OR lower(intitule) like '%${kk}%' OR lower(description) like '%${kk}%')`;
   }).join(" OR ");
@@ -196,17 +350,11 @@ function buildBOAMPWhere() {
   return `((${cpvOr}) OR (${kwOr}))`;
 }
 
-function recordHasAllowedCPV(r: any) {
-  const cpvArr = Array.isArray(r?.cpv) ? r.cpv : [];
-  const principals = cpvArr.map((x: any) => normalizeText(x?.PRINCIPAL));
-  return principals.some((p: string) => CPV_CODES.some((c) => p.startsWith(c)));
-}
-
 async function ingestBOAMPDILA(source: Source) {
   const where = buildBOAMPWhere();
 
   const url = new URL(source.url);
-  url.searchParams.set("limit", "80");
+  url.searchParams.set("limit", "120");
   url.searchParams.set("order_by", "dateparution desc");
   url.searchParams.set("where", where);
 
@@ -228,19 +376,11 @@ async function ingestBOAMPDILA(source: Source) {
 
     const summary = normalizeText(r?.objet || r?.description || r?.resume || "");
 
-    // ✅ Hard safety filter :
-    // Si CPV match -> OK
-    // Sinon il faut un keyword fort dans objet/intitule/description
-    const textForMatch = `${title} ${summary} ${normalizeText(r?.descripteur_libelle?.join(" ") || "")}`;
-    const okCPV = recordHasAllowedCPV(r);
-    const okKW = containsStrongKeyword(textForMatch);
-
-    if (!okCPV && !okKW) continue;
-
     const score = scoreFromText(title, body);
-    const tags = tagsFromText(title, body);
+    if (score < 35) continue;
 
-    if (score < 25) continue;
+    const tags = tagsFromText(title, body);
+    if (tags.includes("BRUIT")) continue;
 
     const out = await upsertOpportunity({
       title,
@@ -302,3 +442,4 @@ export async function GET(req: Request) {
 
   return NextResponse.json({ ok: true, created: totalCreated, sources: details });
 }
+
