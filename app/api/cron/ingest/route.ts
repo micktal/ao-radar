@@ -11,36 +11,64 @@ type Source = {
   is_active: boolean;
 };
 
-function normalizeText(s: any) {
-  return (s ?? "").toString().trim();
+const CPV_CODES = [
+  "79711000", // alarm monitoring
+  "79710000", // security services
+  "45312000", // alarm installation works
+  "50610000", // repair/maintenance security equipment
+  "35120000", // surveillance systems supply
+  "71317100", // fire protection & control consultancy
+  "79417000", // security consultancy
+  "71317000", // risk protection & control consultancy
+  "80550000", // security training
+  "80561000", // health training / SST
+];
+
+const KEYWORDS = [
+  "télésurveillance",
+  "telesurveillance",
+  "surveillance",
+  "alarme",
+  "intrusion",
+  "vidéoprotection",
+  "videosurveillance",
+  "cctv",
+  "contrôle d'accès",
+  "controle d acces",
+  "audit sécurité",
+  "audit sûreté",
+  "sûreté",
+  "sécurité privée",
+  "security audit",
+  "formation sécurité",
+  "e-learning",
+  "sst",
+  "secourisme",
+  "incendie",
+];
+
+function normalizeText(v: any) {
+  return (v ?? "").toString().trim();
 }
 
 function scoreFromText(title: string, body: string) {
   const t = (title + " " + body).toLowerCase();
-
   let score = 0;
 
-  // Strong signals
   if (/(appel d['’]?offre|consultation|tender|rfp|march[eé] public|march[eé]s publics)/i.test(t)) score += 25;
 
-  // Télésurveillance / sécurité
   if (/(t[ée]l[ée]surveillance|telesurveillance|remote monitoring|supervision)/i.test(t)) score += 20;
   if (/(vid[ée]oprotection|cctv|cam[ée]ra|videosurveillance)/i.test(t)) score += 18;
   if (/(contr[oô]le d['’]?acc[eè]s|intrusion|alarme|ssi|incendie|sprinkler)/i.test(t)) score += 14;
 
-  // Audit / conseil sûreté
-  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée])/i.test(t)) score += 15;
+  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée]|conseil)/i.test(t)) score += 15;
 
-  // Formation
-  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|incendie|h0b0|habilitations)/i.test(t)) score += 15;
+  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|secourisme|h0b0|habilitations)/i.test(t)) score += 15;
 
-  // Nice-to-have
   if (/(cnaps|apsad|iso\s?27001|iso\s?9001|mase)/i.test(t)) score += 8;
 
-  // Clamp
   if (score > 100) score = 100;
   if (score < 0) score = 0;
-
   return score;
 }
 
@@ -51,8 +79,8 @@ function tagsFromText(title: string, body: string) {
   if (/(appel d['’]?offre|consultation|tender|rfp|march[eé] public|march[eé]s publics)/i.test(t)) tags.push("APPEL_OFFRE");
   if (/(t[ée]l[ée]surveillance|telesurveillance|remote monitoring|supervision)/i.test(t)) tags.push("TELESURVEILLANCE");
   if (/(vid[ée]oprotection|cctv|cam[ée]ra|videosurveillance)/i.test(t)) tags.push("VIDEO");
-  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée])/i.test(t)) tags.push("AUDIT_SECURITE");
-  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|incendie|h0b0)/i.test(t)) tags.push("FORMATION");
+  if (/(audit|s[ûu]ret[ée]|security audit|diagnostic|conformit[ée]|conseil)/i.test(t)) tags.push("AUDIT_SECURITE");
+  if (/(formation|e-learning|elearning|distanciel|pr[ée]sentiel|sst|secourisme|h0b0)/i.test(t)) tags.push("FORMATION");
   if (/(cnaps|apsad|iso|mase)/i.test(t)) tags.push("EXIGENCES");
   if (/(hse|risques|prévention|qse)/i.test(t)) tags.push("HSE");
 
@@ -70,13 +98,8 @@ async function upsertOpportunity(params: {
 }) {
   const supabase = supabaseServer();
 
-  // Dedup = URL unique
-  const { data: existing } = await supabase
-    .from("opportunities")
-    .select("id")
-    .eq("url", params.url)
-    .maybeSingle();
-
+  // DEDUP URL
+  const { data: existing } = await supabase.from("opportunities").select("id").eq("url", params.url).maybeSingle();
   if (existing?.id) return { created: false };
 
   const { error } = await supabase.from("opportunities").insert({
@@ -91,25 +114,26 @@ async function upsertOpportunity(params: {
   });
 
   if (error) throw error;
-
   return { created: true };
 }
 
-// -------- RSS INGEST --------
+// ---------------- RSS INGEST ----------------
 async function ingestRSS(source: Source) {
   const res = await fetch(source.url, { cache: "no-store" });
   if (!res.ok) throw new Error(`RSS fetch failed: ${source.name}`);
 
   const xml = await res.text();
-
-  // Very simple RSS parse (items)
   const items = xml.match(/<item>([\s\S]*?)<\/item>/g) ?? [];
   let created = 0;
 
   for (const item of items.slice(0, 40)) {
-    const title = normalizeText(item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)?.[1] ?? item.match(/<title>([\s\S]*?)<\/title>/)?.[1]);
-    const link = normalizeText(item.match(/<link>([\s\S]*?)<\/link>/)?.[1]);
-    const pubDate = normalizeText(item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1]);
+    const title =
+      normalizeText(
+        item.match(/<title><!\[CDATA\[([\s\S]*?)\]\]><\/title>/)?.[1] ??
+          item.match(/<title>([\s\S]*?)<\/title>/)?.[1]
+      ) || "";
+    const link = normalizeText(item.match(/<link>([\s\S]*?)<\/link>/)?.[1] ?? "");
+    const pubDate = normalizeText(item.match(/<pubDate>([\s\S]*?)<\/pubDate>/)?.[1] ?? "");
 
     const description =
       normalizeText(
@@ -122,15 +146,14 @@ async function ingestRSS(source: Source) {
     const score = scoreFromText(title, description);
     const tags = tagsFromText(title, description);
 
-    // Filtrage léger : on garde un minimum de pertinence
     if (score < 20) continue;
 
     const r = await upsertOpportunity({
       title,
       url: link,
       published_at: pubDate ? new Date(pubDate).toISOString() : null,
-      summary: description.slice(0, 600),
-      raw: description,
+      summary: description ? description.slice(0, 600) : null,
+      raw: description || null,
       score,
       tags,
     });
@@ -141,62 +164,56 @@ async function ingestRSS(source: Source) {
   return { created };
 }
 
-// -------- API INGEST (BOAMP/JOUE) --------
-async function ingestBOAMPExploreAPI(source: Source) {
-  // BOAMP explore v2 : supports where / limit / order_by
-  // We take latest records
+// ---------------- BOAMP DILA API (CPV OR KEYWORDS) ----------------
+function buildBOAMPWhere() {
+  // OpenDataSoft "where" filter language.
+  // We do: (cpv_code IN codes) OR (search terms in title/objet/description)
+  // Field names may vary; we also keep a wide net.
+  const cpvOr = CPV_CODES.map((c) => `cpv LIKE '${c}%'`).join(" OR ");
+
+  const kwOr = KEYWORDS.map((k) => {
+    const kk = k.replace(/'/g, "''");
+    return `(lower(objet) like '%${kk}%' OR lower(intitule) like '%${kk}%' OR lower(description) like '%${kk}%')`;
+  }).join(" OR ");
+
+  return `((${cpvOr}) OR (${kwOr}))`;
+}
+
+async function ingestBOAMPDILA(source: Source) {
+  const where = buildBOAMPWhere();
+
   const url = new URL(source.url);
-  url.searchParams.set("limit", "50");
+  url.searchParams.set("limit", "80");
   url.searchParams.set("order_by", "dateparution desc");
+  url.searchParams.set("where", where);
 
   const res = await fetch(url.toString(), { cache: "no-store" });
-  if (!res.ok) throw new Error(`API fetch failed: ${source.name}`);
+  if (!res.ok) throw new Error(`BOAMP DILA fetch failed: ${source.name}`);
 
   const json = await res.json();
   const results = (json?.results ?? []) as any[];
-
   let created = 0;
 
   for (const r of results) {
-    const title =
-      normalizeText(r?.intitule) ||
-      normalizeText(r?.objet) ||
-      normalizeText(r?.titre) ||
-      normalizeText(r?.libelle) ||
-      "Opportunité";
-
-    const link =
-      normalizeText(r?.url) ||
-      normalizeText(r?.lien) ||
-      normalizeText(r?.source) ||
-      "";
-
-    // If there is no direct link, we generate one
-    const fallbackLink = link || `${source.url}?ref=${encodeURIComponent(normalizeText(r?.id ?? r?.identifiant ?? title))}`;
-
+    const title = normalizeText(r?.intitule || r?.objet || r?.titre || r?.libelle || "Opportunité");
+    const pub = normalizeText(r?.dateparution || r?.datepublication || r?.date || "");
     const body = JSON.stringify(r);
+
+    // URL: certain records provide a link field; otherwise we fallback to dataset reference
+    const link =
+      normalizeText(r?.url || r?.lien || r?.source || "") ||
+      `${source.url}?ref=${encodeURIComponent(normalizeText(r?.id || r?.identifiant || title))}`;
+
+    const summary = normalizeText(r?.objet || r?.description || r?.resume || "");
 
     const score = scoreFromText(title, body);
     const tags = tagsFromText(title, body);
 
-    // Keep only relevant
     if (score < 25) continue;
-
-    const pub =
-      normalizeText(r?.dateparution) ||
-      normalizeText(r?.datepublication) ||
-      normalizeText(r?.date) ||
-      null;
-
-    const summary =
-      normalizeText(r?.resume) ||
-      normalizeText(r?.description) ||
-      normalizeText(r?.objet) ||
-      "";
 
     const out = await upsertOpportunity({
       title,
-      url: fallbackLink,
+      url: link,
       published_at: pub ? new Date(pub).toISOString() : null,
       summary: summary ? summary.slice(0, 600) : null,
       raw: body,
@@ -235,10 +252,17 @@ export async function GET(req: Request) {
         totalCreated += r.created;
         details.push({ source: s.name, type: s.type, created: r.created });
       } else if (s.type === "API") {
-        // BOAMP/JOUE Explore v2
-        const r = await ingestBOAMPExploreAPI(s);
-        totalCreated += r.created;
-        details.push({ source: s.name, type: s.type, created: r.created });
+        // BOAMP DILA / JOUE (if same format, will work)
+        if (s.url.includes("boamp-datadila.opendatasoft.com")) {
+          const r = await ingestBOAMPDILA(s);
+          totalCreated += r.created;
+          details.push({ source: s.name, type: s.type, created: r.created });
+        } else {
+          // fallback: try v2 explore basic
+          const r = await ingestBOAMPDILA(s);
+          totalCreated += r.created;
+          details.push({ source: s.name, type: s.type, created: r.created });
+        }
       } else {
         details.push({ source: s.name, type: s.type, created: 0, skipped: true });
       }
@@ -247,16 +271,11 @@ export async function GET(req: Request) {
     }
   }
 
-  // log run
   await supabase.from("ingest_runs").insert({
     status: "ok",
     created: totalCreated,
     meta: details,
   });
 
-  return NextResponse.json({
-    ok: true,
-    created: totalCreated,
-    sources: details,
-  });
+  return NextResponse.json({ ok: true, created: totalCreated, sources: details });
 }
