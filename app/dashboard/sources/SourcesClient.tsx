@@ -11,10 +11,19 @@ type SourceRow = {
   is_active: boolean;
 };
 
+async function safeJson(res: Response) {
+  const txt = await res.text();
+  if (!txt) return {};
+  try {
+    return JSON.parse(txt);
+  } catch {
+    return { raw: txt };
+  }
+}
+
 export default function SourcesClient({ initialSources }: { initialSources: SourceRow[] }) {
   const router = useRouter();
   const [isPending, startTransition] = useTransition();
-
   const [rows, setRows] = useState<SourceRow[]>(initialSources ?? []);
 
   useEffect(() => {
@@ -22,7 +31,7 @@ export default function SourcesClient({ initialSources }: { initialSources: Sour
   }, [initialSources]);
 
   async function toggleSource(source_id: string, next: boolean) {
-    // ✅ Optimistic UI instant
+    // ✅ Optimistic
     setRows((prev) => prev.map((s) => (s.id === source_id ? { ...s, is_active: next } : s)));
 
     try {
@@ -32,16 +41,18 @@ export default function SourcesClient({ initialSources }: { initialSources: Sour
         body: JSON.stringify({ source_id, is_active: next }),
       });
 
-      const json = await res.json();
-      if (!res.ok || json?.error) throw new Error(json?.error || "toggle failed");
+      const json = await safeJson(res);
 
-      startTransition(() => {
-        router.refresh();
-      });
+      if (!res.ok) {
+        throw new Error(json?.error || `HTTP ${res.status}`);
+      }
+
+      // ✅ Refresh (pour être sûr)
+      startTransition(() => router.refresh());
     } catch (e: any) {
       // rollback
       setRows((prev) => prev.map((s) => (s.id === source_id ? { ...s, is_active: !next } : s)));
-      alert("Erreur toggle: " + (e?.message ?? "unknown"));
+      alert("Erreur toggle: " + (e?.message || "unknown"));
     }
   }
 
@@ -86,7 +97,7 @@ export default function SourcesClient({ initialSources }: { initialSources: Sour
             <div className="col-span-1 text-xs font-semibold">{s.type}</div>
 
             <div className="col-span-6">
-              <a href={s.url} target="_blank" className="underline text-slate-700 break-all">
+              <a href={s.url} target="_blank" className="underline text-slate-700 break-all" rel="noreferrer">
                 {s.url}
               </a>
             </div>
