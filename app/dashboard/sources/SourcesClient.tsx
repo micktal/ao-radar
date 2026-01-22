@@ -11,7 +11,7 @@ type SourceRow = {
   is_active: boolean;
 };
 
-async function safeJson(res: Response) {
+async function safeReadJson(res: Response) {
   const txt = await res.text();
   if (!txt) return {};
   try {
@@ -31,7 +31,7 @@ export default function SourcesClient({ initialSources }: { initialSources: Sour
   }, [initialSources]);
 
   async function toggleSource(source_id: string, next: boolean) {
-    // ✅ Optimistic
+    // ✅ Optimistic UI
     setRows((prev) => prev.map((s) => (s.id === source_id ? { ...s, is_active: next } : s)));
 
     try {
@@ -41,13 +41,13 @@ export default function SourcesClient({ initialSources }: { initialSources: Sour
         body: JSON.stringify({ source_id, is_active: next }),
       });
 
-      const json = await safeJson(res);
+      const json = await safeReadJson(res);
 
       if (!res.ok) {
         throw new Error(json?.error || `HTTP ${res.status}`);
       }
 
-      // ✅ Refresh (pour être sûr)
+      // ✅ refresh server data
       startTransition(() => router.refresh());
     } catch (e: any) {
       // rollback
@@ -97,7 +97,7 @@ export default function SourcesClient({ initialSources }: { initialSources: Sour
             <div className="col-span-1 text-xs font-semibold">{s.type}</div>
 
             <div className="col-span-6">
-              <a href={s.url} target="_blank" className="underline text-slate-700 break-all" rel="noreferrer">
+              <a href={s.url} target="_blank" rel="noreferrer" className="underline text-slate-700 break-all">
                 {s.url}
               </a>
             </div>
