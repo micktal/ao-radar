@@ -28,104 +28,64 @@ function normalizeText(v: any) {
   return (v ?? "").toString().trim();
 }
 
-function safeJsonStringify(v: any) {
-  try {
-    return JSON.stringify(v);
-  } catch {
-    return "";
-  }
-}
-
-function detectSourceFamily(sourceUrl: string) {
-  const u = (sourceUrl || "").toLowerCase();
-
-  if (u.includes("projets-dachats-publics")) return "APPROCH";
-  if (u.includes("marches-publics-conclus-recenses")) return "PLACE";
-
-  // si c'est le dataset BOAMP DILA
-  if (u.includes("boamp-datadila.opendatasoft.com") || u.includes("/dataset/boamp/")) return "BOAMP";
-
-  // dataset joue (souvent via boamp)
-  if (u.includes("/dataset/joue/") || u.includes("joue")) return "JOUE";
-
-  return "UNKNOWN";
-}
-
 function extractCpvCodes(record: any): string[] {
-  const codes: string[] = [];
+  const out: string[] = [];
 
   if (record?.cpv) {
-    if (Array.isArray(record.cpv)) {
-      codes.push(...record.cpv.map((x: any) => normalizeText(x)));
-    } else {
-      codes.push(normalizeText(record.cpv));
-    }
+    if (Array.isArray(record.cpv)) out.push(...record.cpv.map((x: any) => normalizeText(x)));
+    else out.push(normalizeText(record.cpv));
   }
 
-  const raw = safeJsonStringify(record);
+  const raw = JSON.stringify(record);
 
-  const matches1 = raw.match(/"cpv"\s*:\s*"([0-9]{8})"/gi) ?? [];
-  for (const m of matches1) {
-    const num = m.match(/"([0-9]{8})"/)?.[1];
-    if (num) codes.push(num);
+  const matches = raw.match(/"cpv"[^0-9]{0,60}([0-9]{8})/gi) ?? [];
+  for (const m of matches) {
+    const n = m.match(/([0-9]{8})/)?.[1];
+    if (n) out.push(n);
   }
 
   const matches2 =
-    raw.match(/"@listName"\s*:\s*"cpv"[\s\S]{0,120}?"#text"\s*:\s*"([0-9]{8})"/gi) ?? [];
+    raw.match(/"@listName"\s*:\s*"cpv"[\s\S]{0,200}?"#text"\s*:\s*"([0-9]{8})"/gi) ?? [];
   for (const m of matches2) {
-    const num = m.match(/"([0-9]{8})"/)?.[1];
-    if (num) codes.push(num);
+    const n = m.match(/"([0-9]{8})"/)?.[1];
+    if (n) out.push(n);
   }
 
-  const matches3 = raw.match(/"cpv"[^0-9]{0,40}([0-9]{8})/gi) ?? [];
-  for (const m of matches3) {
-    const num = m.match(/([0-9]{8})/)?.[1];
-    if (num) codes.push(num);
-  }
-
-  return Array.from(
-    new Set(
-      codes
-        .map((x) => normalizeText(x))
-        .filter(Boolean)
-        .map((x) => x.replace(/[^0-9]/g, ""))
-        .filter((x) => x.length === 8)
-    )
-  );
+  return Array.from(new Set(out.filter(Boolean)));
 }
 
 function hasAllowedCPV(cpvList: string[]) {
-  if (!cpvList.length) return false;
   return cpvList.some((cpv) => CPV_CODES.some((allowed) => cpv.startsWith(allowed)));
 }
 
-function tagsFromCPV(cpvList: string[], sourceUrl: string) {
+/**
+ * ✅ Tags demandés :
+ * - CPV contient 7971 => GARDIENNAGE
+ * - CPV contient 805 => FORMATION
+ * - sinon => skip
+ */
+function tagsFromCPV(cpvList: string[]) {
   const joined = cpvList.join(" ");
-  const isApproch = sourceUrl.includes("projets-dachats-publics");
-
-  if (/(^|[^0-9])7971/i.test(joined)) {
-    const tags: string[] = ["APPEL_OFFRE", "FAM_TELE", "GARDIENNAGE"];
-    if (isApproch) tags.push("PROJET_AMONT");
-    return tags;
-  }
-
-  if (/(^|[^0-9])805/i.test(joined)) {
-    const tags: string[] = ["APPEL_OFFRE", "FAM_FORMATION", "FORMATION"];
-    if (isApproch) tags.push("PROJET_AMONT");
-    return tags;
-  }
-
+  if (/(^|[^0-9])7971/i.test(joined)) return ["FAM_TELE", "GARDIENNAGE"];
+  if (/(^|[^0-9])805/i.test(joined)) return ["FAM_FORMATION", "FORMATION"];
   return [];
 }
 
 function scoreFromCPV(cpvList: string[]) {
-  if (!cpvList.length) return 0;
   const joined = cpvList.join(" ");
-
-  if (/(^|[^0-9])7971/i.test(joined)) return 85;
-  if (/(^|[^0-9])805/i.test(joined)) return 80;
-
+  if (/(^|[^0-9])7971/i.test(joined)) return 80;
+  if (/(^|[^0-9])805/i.test(joined)) return 75;
   return 60;
+}
+
+function detectSourceFamily(source: Source) {
+  const n = (source.name || "").toUpperCase();
+  const u = (source.url || "").toLowerCase();
+
+  if (n.includes("BOAMP") || u.includes("/datasets/boamp/")) return "BOAMP";
+  if (n.includes("JOUE") || n.includes("TED") || u.includes("/datasets/joue/")) return "JOUE";
+
+  return null;
 }
 
 async function upsertOpportunity(params: {
@@ -133,89 +93,99 @@ async function upsertOpportunity(params: {
   url: string;
   published_at?: string | null;
   summary?: string | null;
-  raw?: string | null;
+  raw?: any;
   score: number;
   tags: string[];
-  source_family: string;
+  source_family?: string | null;
 }) {
   const supabase = supabaseServer();
 
-  if (params.url) {
-    const { data: existing } = await supabase.from("opportunities").select("id").eq("url", params.url).maybeSingle();
-    if (existing?.id) return { created: false };
-  }
+  const { data: existing } = await supabase.from("opportunities").select("id").eq("url", params.url).maybeSingle();
+  if (existing?.id) return { created: false };
 
-  if (!params.url && params.title) {
-    const { data: existingTitle } = await supabase
-      .from("opportunities")
-      .select("id")
-      .eq("title", params.title)
-      .maybeSingle();
-
-    if (existingTitle?.id) return { created: false };
-  }
-
-  const { error } = await supabase.from("opportunities").insert({
+  const payload: any = {
     title: params.title,
     url: params.url,
     published_at: params.published_at ?? null,
     summary: params.summary ?? null,
-    raw: params.raw ?? null,
+    raw: params.raw ? JSON.stringify(params.raw) : null,
     score: params.score,
-    tags: params.tags,
-    source_family: params.source_family,
+    tags: params.tags ?? [],
     status: "NEW",
-  });
+  };
 
+  if (params.source_family) payload.source_family = params.source_family;
+
+  const { error } = await supabase.from("opportunities").insert(payload);
   if (error) throw error;
+
   return { created: true };
 }
 
-function buildWhereCPVOnly() {
-  return CPV_CODES.map((c) => `cpv LIKE '${c}%'`).join(" OR ");
+function getDateValue(r: any) {
+  const v = r?.dateparution || r?.datepublication || r?.date || r?.date_joue || null;
+  if (!v) return 0;
+  const t = new Date(v).getTime();
+  return Number.isNaN(t) ? 0 : t;
 }
 
-async function ingestOpenDataSoftCPVOnly(source: Source) {
-  const where = buildWhereCPVOnly();
+/**
+ * ✅ FETCH ULTRA SAFE :
+ * - on NE TOUCHER PAS aux params (aucun limit/order_by)
+ * - on fait tout localement
+ * - on sort le body complet en cas de 400
+ */
+async function ingestOpenDataSoftUltraSafe(source: Source) {
+  const finalUrl = source.url; // ✅ zéro paramètre ajouté
 
-  const url = new URL(source.url);
-  url.searchParams.set("limit", "120");
-  url.searchParams.set("order_by", "dateparution desc");
-  url.searchParams.set("where", where);
+  const res = await fetch(finalUrl, {
+    method: "GET",
+    cache: "no-store",
+    headers: {
+      "accept": "application/json",
+    },
+  });
 
-  const res = await fetch(url.toString(), { cache: "no-store" });
-  if (!res.ok) throw new Error(`API fetch failed: ${source.name}`);
+  if (!res.ok) {
+    const t = await res.text();
+    throw new Error(`OpenDataSoft fetch failed (${res.status}) URL=${finalUrl} BODY=${t}`);
+  }
 
   const json = await res.json();
-  const results = (json?.results ?? []) as any[];
-  let created = 0;
+  let results = (json?.results ?? []) as any[];
 
-  const source_family = detectSourceFamily(source.url);
+  // ✅ tri local (dernier -> ancien)
+  results.sort((a, b) => getDateValue(b) - getDateValue(a));
+
+  // ✅ limit local (pour perf)
+  results = results.slice(0, 400);
+
+  let created = 0;
 
   for (const r of results) {
     const cpvList = extractCpvCodes(r);
-
     if (!hasAllowedCPV(cpvList)) continue;
 
-    const tags = tagsFromCPV(cpvList, source.url);
+    const tags = tagsFromCPV(cpvList);
     if (!tags.length) continue;
 
     const title = normalizeText(r?.intitule || r?.objet || r?.titre || r?.libelle || "Opportunité");
-    const pub = normalizeText(r?.dateparution || r?.datepublication || r?.date || "");
+    const pub = normalizeText(r?.dateparution || r?.datepublication || r?.date || r?.date_joue || "");
     const summary = normalizeText(r?.objet || r?.description || r?.resume || "");
 
     const link =
-      normalizeText(r?.url_avis || r?.url || r?.lien || r?.source || "") ||
-      `${source.url}?ref=${encodeURIComponent(normalizeText(r?.idweb || r?.id || title))}`;
+      normalizeText(r?.url_avis || r?.url_ted || r?.url || r?.lien || r?.source || "") ||
+      `${source.url}?ref=${encodeURIComponent(normalizeText(r?.idweb || r?.id || r?.reference_ted || title))}`;
 
     const score = scoreFromCPV(cpvList);
+    const source_family = detectSourceFamily(source);
 
     const out = await upsertOpportunity({
       title,
       url: link,
       published_at: pub ? new Date(pub).toISOString() : null,
       summary: summary ? summary.slice(0, 600) : null,
-      raw: safeJsonStringify(r),
+      raw: { ...r, __cpv: cpvList },
       score,
       tags,
       source_family,
@@ -224,7 +194,7 @@ async function ingestOpenDataSoftCPVOnly(source: Source) {
     if (out.created) created++;
   }
 
-  return { created };
+  return { created, url: finalUrl };
 }
 
 export async function GET(req: Request) {
@@ -248,9 +218,9 @@ export async function GET(req: Request) {
 
   for (const s of (sources ?? []) as Source[]) {
     try {
-      const r = await ingestOpenDataSoftCPVOnly(s);
+      const r = await ingestOpenDataSoftUltraSafe(s);
       totalCreated += r.created;
-      details.push({ source: s.name, created: r.created });
+      details.push({ source: s.name, created: r.created, url: r.url });
     } catch (e: any) {
       details.push({ source: s.name, error: e?.message ?? "error" });
     }
