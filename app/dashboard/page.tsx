@@ -12,6 +12,7 @@ type Opp = {
   tags: string[];
   status: "NEW" | "TRIAGED" | "QUALIFIED" | "SENT" | "WON" | "LOST";
   published_at: string | null;
+  source_family: string | null;
 };
 
 function asText(v: any) {
@@ -36,11 +37,11 @@ function hasTag(tags: string[], t: string) {
 }
 
 /**
- * ✅ On filtre maintenant par les tags familles stricts
+ * ✅ Filtre familles strict (via tags)
  * - TELESURVEILLANCE => FAM_TELE
  * - FORMATION => FAM_FORMATION
  * - AUDIT => FAM_AUDIT
- * - AUTRES => aucun de ces tags
+ * - AUTRES => aucun tag famille
  */
 function matchesFamily(tags: string[], family: string) {
   if (family === "ALL") return true;
@@ -76,6 +77,17 @@ function FamilyBadge({ family }: { family: string }) {
   );
 }
 
+function SourceBadge({ v }: { v: string | null }) {
+  const label =
+    v === "BOAMP" ? "BOAMP" : v === "JOUE" ? "JOUE" : v === "APPROCH" ? "APProch" : v === "PLACE" ? "PLACE" : "—";
+
+  return (
+    <span className="inline-flex items-center px-2 py-1 rounded-full border border-slate-300 bg-white text-slate-900 text-xs">
+      {label}
+    </span>
+  );
+}
+
 export default async function DashboardPage(props: {
   searchParams: Promise<Record<string, string | string[] | undefined>>;
 }) {
@@ -90,7 +102,7 @@ export default async function DashboardPage(props: {
 
   const { data: opps, error } = await supabase
     .from("opportunities")
-    .select("id,title,summary,url,score,tags,status,published_at")
+    .select("id,title,summary,url,score,tags,status,published_at,source_family")
     .order("score", { ascending: false })
     .limit(500);
 
@@ -134,9 +146,7 @@ export default async function DashboardPage(props: {
         <div className="flex items-start justify-between gap-6">
           <div>
             <div className="text-3xl font-bold">AO Radar — Dashboard</div>
-            <div className="text-sm text-slate-300 mt-1">
-              Travail alternants : filtrer → qualifier → transmettre.
-            </div>
+            <div className="text-sm text-slate-300 mt-1">Travail alternants : filtrer → qualifier → transmettre.</div>
           </div>
 
           <div className="flex gap-2">
@@ -215,11 +225,7 @@ export default async function DashboardPage(props: {
 
             <div>
               <div className="text-xs font-medium text-slate-600 mb-1">Statut</div>
-              <select
-                name="status"
-                defaultValue={status}
-                className="w-full px-3 py-2 rounded-lg border border-slate-300"
-              >
+              <select name="status" defaultValue={status} className="w-full px-3 py-2 rounded-lg border border-slate-300">
                 <option value="ALL">Tous</option>
                 <option value="NEW">Nouveau</option>
                 <option value="TRIAGED">Trié</option>
@@ -260,10 +266,11 @@ export default async function DashboardPage(props: {
         <div className="bg-white rounded-xl overflow-hidden">
           <div className="grid grid-cols-12 px-4 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">
             <div className="col-span-1">Score</div>
-            <div className="col-span-6">Opportunité</div>
+            <div className="col-span-5">Opportunité</div>
+            <div className="col-span-2">Source</div>
             <div className="col-span-2">Tags</div>
             <div className="col-span-1">Statut</div>
-            <div className="col-span-2">Actions</div>
+            <div className="col-span-1">Actions</div>
           </div>
 
           {filtered.length === 0 ? (
@@ -273,12 +280,18 @@ export default async function DashboardPage(props: {
               <div key={o.id} className="grid grid-cols-12 px-4 py-4 border-b border-slate-200 text-sm text-slate-900">
                 <div className="col-span-1 font-semibold">{o.score}</div>
 
-                <div className="col-span-6">
+                <div className="col-span-5">
                   <Link href={`/dashboard/opportunities/${o.id}`} className="font-semibold underline">
                     {o.title}
                   </Link>
                   {o.summary ? <div className="text-slate-600 mt-1 line-clamp-2">{o.summary}</div> : null}
-                  <div className="text-xs text-slate-400 mt-1">Publié : {formatDate(o.published_at)}</div>
+                  <div className="text-xs text-slate-400 mt-1">
+                    Publié : {formatDate(o.published_at)}
+                  </div>
+                </div>
+
+                <div className="col-span-2 flex items-start">
+                  <SourceBadge v={o.source_family} />
                 </div>
 
                 <div className="col-span-2 flex flex-wrap gap-2">
@@ -294,7 +307,7 @@ export default async function DashboardPage(props: {
 
                 <div className="col-span-1 font-medium">{o.status}</div>
 
-                <div className="col-span-2 flex flex-wrap gap-2">
+                <div className="col-span-1 flex flex-wrap gap-2">
                   <Link
                     href={`/dashboard/opportunities/${o.id}`}
                     className="px-3 py-1 rounded-lg border border-slate-300 bg-white hover:bg-slate-100"
