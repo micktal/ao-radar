@@ -1,8 +1,9 @@
 "use client";
 
-import React from "react";
+import { useEffect, useMemo, useState, useTransition } from "react";
+import { useRouter } from "next/navigation";
 
-type Source = {
+type SourceRow = {
   id: string;
   name: string;
   type: "RSS" | "API";
@@ -10,104 +11,95 @@ type Source = {
   is_active: boolean;
 };
 
-function badgeType(t: Source["type"]) {
-  if (t === "API") return "bg-black text-white";
-  return "bg-white text-black border border-black";
-}
+export default function SourcesClient({ initialSources }: { initialSources: SourceRow[] }) {
+  const router = useRouter();
+  const [isPending, startTransition] = useTransition();
 
-export default function SourcesClient({ sources }: { sources: Source[] }) {
-  return (
-    <div className="min-h-screen bg-black text-white">
-      <div className="max-w-6xl mx-auto px-6 py-10 space-y-6">
-        <div>
-          <div className="text-3xl font-bold">Sources</div>
-          <div className="text-sm text-slate-300 mt-1">
-            Active / désactive directement depuis l’interface (sans SQL).
-          </div>
-        </div>
+  const [rows, setRows] = useState<SourceRow[]>(initialSources ?? []);
 
-        <div className="bg-white rounded-xl overflow-hidden">
-          <div className="grid grid-cols-12 px-4 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">
-            <div className="col-span-1">Actif</div>
-            <div className="col-span-4">Nom</div>
-            <div className="col-span-1">Type</div>
-            <div className="col-span-6">URL</div>
-          </div>
+  useEffect(() => {
+    setRows(initialSources ?? []);
+  }, [initialSources]);
 
-          {sources.length === 0 ? (
-            <div className="px-4 py-6 text-sm text-slate-600">Aucune source.</div>
-          ) : (
-            sources.map((s) => (
-              <div
-                key={s.id}
-                className="grid grid-cols-12 px-4 py-4 border-b border-slate-200 text-sm text-slate-900 bg-white items-center"
-              >
-                <div className="col-span-1">
-                  <Toggle sourceId={s.id} initialActive={s.is_active} />
-                </div>
+  const byType = useMemo(() => {
+    const api = rows.filter((r) => r.type === "API");
+    const rss = rows.filter((r) => r.type === "RSS");
+    return { api, rss };
+  }, [rows]);
 
-                <div className="col-span-4 font-medium">{s.name}</div>
+  async function toggleSource(source_id: string, next: boolean) {
+    // ✅ Optimistic UI instant
+    setRows((prev) => prev.map((s) => (s.id === source_id ? { ...s, is_active: next } : s)));
 
-                <div className="col-span-1">
-                  <span className={`inline-flex px-2 py-1 text-xs rounded-full ${badgeType(s.type)}`}>
-                    {s.type}
-                  </span>
-                </div>
+    try {
+      const res = await fetch("/api/sources/toggle", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ source_id, is_active: next }),
+      });
 
-                <div className="col-span-6">
-                  <a
-                    href={s.url}
-                    target="_blank"
-                    className="underline text-slate-800 hover:text-black break-all"
-                    rel="noreferrer"
-                  >
-                    {s.url}
-                  </a>
-                </div>
-              </div>
-            ))
-          )}
-        </div>
-      </div>
-    </div>
-  );
-}
+      const json = await res.json();
+      if (!res.ok || json?.error) throw new Error(json?.error || "toggle failed");
 
-function Toggle({ sourceId, initialActive }: { sourceId: string; initialActive: boolean }) {
-  const [active, setActive] = React.useState(initialActive);
-  const [loading, setLoading] = React.useState(false);
-
-  async function toggle(next: boolean) {
-    setLoading(true);
-    setActive(next);
-
-    const res = await fetch("/api/sources/toggle", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ source_id: sourceId, is_active: next }),
-    });
-
-    setLoading(false);
-
-    if (!res.ok) {
-      alert("Erreur lors du toggle (admin requis).");
-      setActive(!next);
-      return;
+      // ✅ Force refresh server components
+      startTransition(() => {
+        router.refresh();
+      });
+    } catch (e) {
+      // rollback
+      setRows((prev) => prev.map((s) => (s.id === source_id ? { ...s, is_active: !next } : s)));
+      alert("Erreur toggle: " + (e as any)?.message);
     }
   }
 
   return (
-    <label className="inline-flex items-center cursor-pointer">
-      <input
-        type="checkbox"
-        checked={active}
-        disabled={loading}
-        onChange={(e) => toggle(e.target.checked)}
-        className="sr-only peer"
-      />
-      <div className="w-11 h-6 bg-slate-300 peer-focus:outline-none rounded-full peer peer-checked:bg-black relative opacity-100 disabled:opacity-60">
-        <div className="absolute top-0.5 left-0.5 bg-white w-5 h-5 rounded-full transition-all peer-checked:translate-x-5" />
+    <div className="bg-white rounded-xl overflow-hidden border border-white/10">
+      <div className="grid grid-cols-12 px-4 py-3 border-b border-slate-200 text-sm font-semibold text-slate-900">
+        <div className="col-span-1">Actif</div>
+        <div className="col-span-4">Nom</div>
+        <div className="col-span-1">Type</div>
+        <div className="col-span-6">URL</div>
       </div>
-    </label>
+
+      {rows.length === 0 ? (
+        <div className="px-4 py-6 text-sm text-slate-600">Aucune source.</div>
+      ) : (
+        rows.map((s) => (
+          <div
+            key={s.id}
+            className="grid grid-cols-12 px-4 py-4 border-b border-slate-200 text-sm text-slate-900 items-center"
+          >
+            <div className="col-span-1">
+              <button
+                disabled={isPending}
+                onClick={() => toggleSource(s.id, !s.is_active)}
+                className={[
+                  "w-10 h-6 rounded-full relative transition",
+                  s.is_active ? "bg-emerald-500" : "bg-slate-300",
+                  isPending ? "opacity-60 cursor-not-allowed" : "opacity-100",
+                ].join(" ")}
+                title={s.is_active ? "Désactiver" : "Activer"}
+              >
+                <span
+                  className={[
+                    "absolute top-0.5 w-5 h-5 bg-white rounded-full transition",
+                    s.is_active ? "left-4" : "left-0.5",
+                  ].join(" ")}
+                />
+              </button>
+            </div>
+
+            <div className="col-span-4 font-medium">{s.name}</div>
+            <div className="col-span-1 text-xs font-semibold">{s.type}</div>
+
+            <div className="col-span-6">
+              <a href={s.url} target="_blank" className="underline text-slate-700 break-all">
+                {s.url}
+              </a>
+            </div>
+          </div>
+        ))
+      )}
+    </div>
   );
 }
