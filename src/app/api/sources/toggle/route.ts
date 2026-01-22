@@ -1,14 +1,14 @@
 import { NextResponse } from "next/server";
 import { supabaseServer } from "@/lib/supabaseServer";
-import { requireAdmin } from "@/lib/auth/requireAdmin";
 
 export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    const guard = await requireAdmin();
-    if (!guard.ok) {
-      return NextResponse.json({ error: guard.error }, { status: guard.status });
+    // ✅ sécurité simple : même secret que cron
+    const secret = req.headers.get("x-cron-secret");
+    if (!secret || secret !== process.env.CRON_SECRET) {
+      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
     }
 
     const body = await req.json();
@@ -22,18 +22,16 @@ export async function POST(req: Request) {
 
     const supabase = supabaseServer();
 
-    const { data, error } = await supabase
+    const { error } = await supabase
       .from("sources")
       .update({ is_active })
-      .eq("id", source_id)
-      .select("id,is_active")
-      .maybeSingle();
+      .eq("id", source_id);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
     }
 
-    return NextResponse.json({ ok: true, source: data });
+    return NextResponse.json({ ok: true });
   } catch (e: any) {
     return NextResponse.json({ error: e?.message ?? "server error" }, { status: 500 });
   }
