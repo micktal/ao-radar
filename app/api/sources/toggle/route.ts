@@ -15,7 +15,6 @@ export async function POST(req: Request) {
     }
 
     const supabase = supabaseServer();
-
     const { error } = await supabase.from("sources").update({ is_active }).eq("id", source_id);
 
     if (error) {
