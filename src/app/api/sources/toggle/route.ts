@@ -5,12 +5,6 @@ export const runtime = "nodejs";
 
 export async function POST(req: Request) {
   try {
-    // ✅ sécurité simple : même secret que cron
-    const secret = req.headers.get("x-cron-secret");
-    if (!secret || secret !== process.env.CRON_SECRET) {
-      return NextResponse.json({ error: "unauthorized" }, { status: 401 });
-    }
-
     const body = await req.json();
 
     const source_id = body?.source_id as string | undefined;
@@ -22,10 +16,7 @@ export async function POST(req: Request) {
 
     const supabase = supabaseServer();
 
-    const { error } = await supabase
-      .from("sources")
-      .update({ is_active })
-      .eq("id", source_id);
+    const { error } = await supabase.from("sources").update({ is_active }).eq("id", source_id);
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 });
